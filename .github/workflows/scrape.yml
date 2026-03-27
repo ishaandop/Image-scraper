@@ -19,7 +19,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install requests beautifulsoup4 Pillow
+        run: pip install requests Pillow
 
       - name: Run scraper
         run: python scrape_cars.py
