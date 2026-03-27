@@ -7,7 +7,7 @@ on:
 
 jobs:
   scrape:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
 
     steps:
       - name: Checkout repository
@@ -22,7 +22,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Install Playwright Chromium
-        run: playwright install --with-deps chromium
+        run: pip install playwright==1.44.0 && python -m playwright install chromium --with-deps
 
       - name: Run scraper
         run: python scrape_cars.py
