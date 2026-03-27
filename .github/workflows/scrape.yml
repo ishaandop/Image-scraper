@@ -7,7 +7,7 @@ on:
 
 jobs:
   scrape:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
@@ -19,10 +19,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Install Playwright Chromium
-        run: pip install playwright==1.44.0 && python -m playwright install chromium --with-deps
+        run: pip install requests beautifulsoup4 Pillow
 
       - name: Run scraper
         run: python scrape_cars.py
