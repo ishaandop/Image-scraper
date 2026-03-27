@@ -1,9 +1,11 @@
-# Car image scraper - fetches reference images from CarWale via embedded JSON data
+# Car image scraper - fetches 8 reference images per car from CarWale
 """Scrape car reference images from CarWale using requests (no browser needed).
 
 CarWale is a Next.js app. Each page embeds a __NEXT_DATA__ JSON blob containing
 structured image data with high-res CDN URLs hosted on imgd.aeplcdn.com.
-This script extracts that JSON to find and download images by view category.
+This script extracts that JSON to find and download 8 specific angles per car.
+
+Target: 80 images total (8 angles x 10 cars).
 """
 
 import json
@@ -26,11 +28,51 @@ CARS = {
     "Hyundai Venue": "https://www.carwale.com/hyundai-cars/venue/images/",
 }
 
-VIEW_KEYWORDS = {
-    "front": ["front", "headlamp", "head lamp", "grille", "bumper front", "front-three-quarter"],
-    "side": ["side", "profile", "left-view", "right-view", "left side", "right side"],
-    "rear": ["rear", "tail lamp", "taillamp", "tail-lamp", "back", "boot", "rear-three-quarter"],
-    "interior": ["interior", "dashboard", "steering", "cabin", "infotainment"],
+# 8 target views: filename -> (keywords to match, keywords to exclude)
+VIEWS = {
+    "front_straight": {
+        "keywords": ["front-view", "front view", "grille", "bumper", "headlamp", "head-lamp", "head lamp"],
+        "exclude": ["three-quarter", "3/4", "quarter", "side"],
+        "category": "exterior",
+    },
+    "front_3q": {
+        "keywords": ["front-three-quarter", "right-front-three-quarter", "left-front-three-quarter",
+                      "front three quarter", "front 3/4", "front quarter"],
+        "exclude": [],
+        "category": "exterior",
+    },
+    "side_left": {
+        "keywords": ["left-side-view", "left side view", "left-view", "left view", "left side"],
+        "exclude": ["front", "rear", "quarter", "three-quarter"],
+        "category": "exterior",
+    },
+    "side_right": {
+        "keywords": ["right-side-view", "right side view", "right-view", "right view", "right side"],
+        "exclude": ["front", "rear", "quarter", "three-quarter"],
+        "category": "exterior",
+    },
+    "rear_straight": {
+        "keywords": ["rear-view", "rear view", "tail-lamp", "tail lamp", "taillamp", "taillight",
+                      "boot", "rear-left-view", "rear-right-view"],
+        "exclude": ["three-quarter", "3/4", "quarter", "seat"],
+        "category": "exterior",
+    },
+    "interior_dashboard": {
+        "keywords": ["dashboard", "dash-board", "interior-front", "cabin-front", "interior front"],
+        "exclude": ["steering", "seat", "rear"],
+        "category": "interior",
+    },
+    "interior_steering": {
+        "keywords": ["steering", "steering-wheel", "steering wheel"],
+        "exclude": [],
+        "category": "interior",
+    },
+    "interior_rear_seats": {
+        "keywords": ["rear-seat", "rear seat", "back-seat", "back seat", "rear-passenger",
+                      "rear passenger", "second-row", "second row"],
+        "exclude": [],
+        "category": "interior",
+    },
 }
 
 OUTPUT_DIR = "car_references"
@@ -75,12 +117,6 @@ def upscale_url(url: str) -> str:
     return re.sub(r"/\d+x\d+/", "/1056x594/", url)
 
 
-def match_view(text: str, view: str) -> bool:
-    """Check if text matches a desired view category."""
-    text_lower = text.lower()
-    return any(kw in text_lower for kw in VIEW_KEYWORDS[view])
-
-
 def extract_next_data(html: str) -> dict | None:
     """Extract __NEXT_DATA__ JSON from the page HTML."""
     match = re.search(
@@ -107,15 +143,15 @@ def extract_images_from_json(data: dict) -> list[dict]:
             return
         if isinstance(obj, dict):
             # Look for objects that have image URL fields
-            url = (
-                obj.get("imageUrl")
-                or obj.get("imagePath")
-                or obj.get("originalImageUrl")
-                or obj.get("hostUrl", "")
-                + obj.get("imagePath", "")
-                if obj.get("hostUrl") and obj.get("imagePath")
-                else None
-            )
+            url = None
+            if obj.get("hostUrl") and obj.get("imagePath"):
+                url = obj["hostUrl"] + obj["imagePath"]
+            else:
+                url = (
+                    obj.get("imageUrl")
+                    or obj.get("imagePath")
+                    or obj.get("originalImageUrl")
+                )
             alt = (
                 obj.get("imageAlt")
                 or obj.get("altText")
@@ -142,19 +178,16 @@ def extract_images_from_json(data: dict) -> list[dict]:
 def extract_images_from_html(html: str) -> list[dict]:
     """Fallback: extract image URLs directly from the HTML source using regex."""
     images = []
-    # Match CDN image URLs in the HTML
     pattern = r'(https?://imgd[.-]aeplcdn\.com/[^\s"\'<>]+\.(?:jpg|jpeg|png|webp))'
     for match in re.finditer(pattern, html, re.IGNORECASE):
         url = match.group(1)
         images.append({"url": url, "alt": url.split("/")[-1], "category": ""})
 
-    # Also try carwale CDN
     pattern2 = r'(https?://[a-z0-9.-]*carwale\.com/[^\s"\'<>]+\.(?:jpg|jpeg|png|webp))'
     for match in re.finditer(pattern2, html, re.IGNORECASE):
         url = match.group(1)
         images.append({"url": url, "alt": url.split("/")[-1], "category": ""})
 
-    # Deduplicate
     seen = set()
     unique = []
     for img in images:
@@ -164,8 +197,23 @@ def extract_images_from_html(html: str) -> list[dict]:
     return unique
 
 
+def match_candidate(candidate: dict, view_config: dict) -> bool:
+    """Check if a candidate image matches a specific view configuration."""
+    searchable = f"{candidate['alt']} {candidate['category']} {candidate['url']}".lower()
+
+    # Must match at least one keyword
+    if not any(kw in searchable for kw in view_config["keywords"]):
+        return False
+
+    # Must not match any exclude keyword
+    if view_config["exclude"] and any(kw in searchable for kw in view_config["exclude"]):
+        return False
+
+    return True
+
+
 def scrape_car_images(car: str, url: str) -> None:
-    """Scrape images for a single car model from its CarWale images page."""
+    """Scrape 8 images for a single car model from its CarWale images page."""
     car_folder = os.path.join(OUTPUT_DIR, sanitize_filename(car))
     os.makedirs(car_folder, exist_ok=True)
 
@@ -188,10 +236,9 @@ def scrape_car_images(car: str, url: str) -> None:
         print(f"  [DEBUG] Found {len(candidates)} images from __NEXT_DATA__")
 
     # Strategy 2: Regex fallback on raw HTML
-    if len(candidates) < 4:
+    if len(candidates) < 8:
         html_images = extract_images_from_html(html)
         print(f"  [DEBUG] Found {len(html_images)} images from HTML regex fallback")
-        # Append only new URLs
         existing_urls = {c["url"] for c in candidates}
         for img in html_images:
             if img["url"] not in existing_urls:
@@ -204,55 +251,81 @@ def scrape_car_images(car: str, url: str) -> None:
 
     # Print all candidates for debugging
     print(f"  [DEBUG] Total candidates: {len(candidates)}")
-    for i, c in enumerate(candidates[:20]):
+    for i, c in enumerate(candidates[:30]):
         alt_preview = c["alt"][:80] if c["alt"] else "(no alt)"
         print(f"    [{i}] {alt_preview}")
         print(f"         URL: {c['url'][:120]}")
 
-    # Match candidates to views
+    # Match candidates to each of the 8 views
     saved_views = set()
-    for view in VIEW_KEYWORDS:
+    used_urls = set()
+
+    for view_name, view_config in VIEWS.items():
         for candidate in candidates:
-            searchable = f"{candidate['alt']} {candidate['category']} {candidate['url']}"
-            if match_view(searchable, view):
+            if candidate["url"] in used_urls:
+                continue
+            if match_candidate(candidate, view_config):
                 img_url = upscale_url(candidate["url"])
-                filepath = os.path.join(car_folder, f"{view}.jpg")
-                print(f"  [{view}] Matched: {candidate['alt'][:60]}")
+                filepath = os.path.join(car_folder, f"{view_name}.jpg")
+                print(f"  [{view_name}] Matched: {candidate['alt'][:60]}")
                 if download_image(img_url, filepath):
-                    saved_views.add(view)
+                    saved_views.add(view_name)
+                    used_urls.add(candidate["url"])
                     break
 
-    # Fallback: assign remaining unmatched images to missing views
-    missing = [v for v in VIEW_KEYWORDS if v not in saved_views]
-    if missing:
-        print(f"  [DEBUG] Missing views after keyword match: {missing}")
-        used_urls = set()
-        idx = 0
+    # Relaxed pass: for missing views, try broader keyword matching (just category)
+    missing_views = [v for v in VIEWS if v not in saved_views]
+    if missing_views:
+        print(f"  [DEBUG] Missing after strict match: {missing_views}")
+        for view_name in list(missing_views):
+            view_config = VIEWS[view_name]
+            target_cat = view_config["category"]
+            for candidate in candidates:
+                if candidate["url"] in used_urls:
+                    continue
+                cat = candidate["category"].lower()
+                alt = candidate["alt"].lower()
+                url_path = candidate["url"].lower()
+                # Match on category (exterior/interior) from alt or category field
+                if target_cat in cat or target_cat in alt or target_cat in url_path:
+                    img_url = upscale_url(candidate["url"])
+                    filepath = os.path.join(car_folder, f"{view_name}.jpg")
+                    print(f"  [{view_name}] Relaxed match: {candidate['alt'][:60]}")
+                    if download_image(img_url, filepath):
+                        saved_views.add(view_name)
+                        used_urls.add(candidate["url"])
+                        missing_views.remove(view_name)
+                        break
+
+    # Final fallback: assign any remaining candidates to missing views
+    missing_views = [v for v in VIEWS if v not in saved_views]
+    if missing_views:
+        print(f"  [DEBUG] Missing after relaxed match: {missing_views}")
         for candidate in candidates:
-            if not missing:
+            if not missing_views:
                 break
             if candidate["url"] in used_urls:
                 continue
-            view = missing.pop(0)
+            view_name = missing_views.pop(0)
             img_url = upscale_url(candidate["url"])
-            filepath = os.path.join(car_folder, f"{view}.jpg")
-            print(f"  [{view}] Fallback image #{idx}: {candidate['alt'][:60]}")
+            filepath = os.path.join(car_folder, f"{view_name}.jpg")
+            print(f"  [{view_name}] Fallback: {candidate['alt'][:60]}")
             if download_image(img_url, filepath):
+                saved_views.add(view_name)
                 used_urls.add(candidate["url"])
             else:
-                missing.insert(0, view)  # Put it back if download failed
-            idx += 1
+                missing_views.insert(0, view_name)
 
-    final_missing = [v for v in VIEW_KEYWORDS if v not in saved_views]
+    final_missing = [v for v in VIEWS if v not in saved_views]
     if final_missing:
         print(f"  -> WARNING: Still missing views: {final_missing}")
     else:
-        print(f"  -> All 4 views saved successfully!")
+        print(f"  -> All 8 views saved successfully!")
 
 
 def main() -> None:
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    print(f"Scraping images for {len(CARS)} car models...\n")
+    print(f"Scraping 8 images each for {len(CARS)} car models (80 total)...\n")
 
     for car, url in CARS.items():
         print(f"\n{'='*60}")
@@ -263,17 +336,21 @@ def main() -> None:
 
     # Summary
     print(f"\n{'='*60}")
-    print(f"SUMMARY")
+    print("SUMMARY")
     print(f"{'='*60}")
+    total = 0
     for car in CARS:
         car_folder = os.path.join(OUTPUT_DIR, sanitize_filename(car))
         if os.path.isdir(car_folder):
-            files = os.listdir(car_folder)
-            print(f"  {car}: {len(files)} images -> {files}")
+            files = sorted(os.listdir(car_folder))
+            count = len(files)
+            total += count
+            print(f"  {car}: {count}/8 images -> {files}")
         else:
             print(f"  {car}: NO FOLDER CREATED")
 
-    print(f"\nDone! Images saved to: {OUTPUT_DIR}")
+    print(f"\n  TOTAL: {total}/80 images downloaded")
+    print(f"  Saved to: {OUTPUT_DIR}")
 
 
 if __name__ == "__main__":
