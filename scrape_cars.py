@@ -1,3 +1,4 @@
+# Car image scraper - fetches reference images from CarWale for 10 popular models
 """Scrape car reference images from CarWale using Playwright."""
 
 import os
